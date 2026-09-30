@@ -1,0 +1,10 @@
+# Binaries
+/server
+/symbol-web
+*.exe
+*.test
+
+# Local environment (real settings live here, never commit it)
+.env
+
+.DS_Store
