@@ -1,0 +1,10 @@
+{{define "result"}}
+{{if .Art}}
+<section class="card result" id="result">
+  <h2 class="label">Result <span class="badge">{{.Banner}}</span></h2>
+  <div class="art-scroll">
+    <pre class="art">{{.Art}}</pre>
+  </div>
+</section>
+{{end}}
+{{end}}

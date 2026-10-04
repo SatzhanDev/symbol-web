@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>symbol-web</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <h1>symbol-web</h1>
+      <p class="subtitle">Turn your text into ASCII art</p>
+    </header>
+
+    <form class="card" action="/symbol-art" method="POST">
+      <label class="label" for="text-input">Your text</label>
+      <textarea id="text-input" name="text" rows="3" maxlength="1000"
+                placeholder="Type your text..." required>{{.Text}}</textarea>
+      <p class="hint">English letters, digits and symbols. Press Enter for a new line.</p>
+
+      <fieldset class="banners">
+        <legend class="label">Banner</legend>
+        {{range .Banners}}
+        <label class="banner-option" data-banner="{{.}}">
+          <input type="radio" name="banner" value="{{.}}" {{if eq . $.Banner}}checked{{end}}>
+          <span>{{.}}</span>
+        </label>
+        {{end}}
+      </fieldset>
+
+      {{if .Error}}
+      <p class="error-message" role="alert">{{.Error}}</p>
+      {{end}}
+
+      <button type="submit" class="btn-primary">Generate</button>
+    </form>
+
+    {{template "result" .}}
+  </main>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Status}} {{.StatusText}} · symbol-web</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <main class="container">
+    <section class="card error-page">
+      <p class="error-code">{{.Status}}</p>
+      <h1>{{.StatusText}}</h1>
+      <p>{{.Message}}</p>
+      <a class="btn-primary" href="/">Back to home</a>
+    </section>
+  </main>
+</body>
+</html>
