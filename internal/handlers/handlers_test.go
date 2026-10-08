@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"symbol-web/internal/ai"
 	"symbol-web/internal/ascii"
 )
 
@@ -28,8 +30,10 @@ func TestMain(m *testing.M) {
 
 // newTestServer builds the full router with the given directories.
 func newTestServer(bannerDir, tmplDir string) http.Handler {
+	profiles, _ := ai.ProfileBanners(bannerDir) // missing banners are simply skipped
 	return New(Config{
 		Generator:   ascii.NewGenerator(bannerDir),
+		Recommender: ai.NewRecommender(profiles),
 		TemplateDir: tmplDir,
 		StaticDir:   staticDir,
 	}).Routes()
@@ -137,5 +141,67 @@ func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func postJSON(path, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func TestRecommendBannerEndpoint(t *testing.T) {
+	h := newTestServer(projectRoot, templateDir)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postJSON("/api/recommend-banner", `{"text": "WELCOME"}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	var got ai.Recommendation
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got.Recommended != ai.Shadow || got.Reasoning == "" || len(got.Alternatives) != 2 {
+		t.Errorf("unexpected recommendation: %+v", got)
+	}
+}
+
+func TestAPIErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		req  *http.Request
+		want int
+	}{
+		{"empty text", postJSON("/api/recommend-banner", `{"text": ""}`), http.StatusBadRequest},
+		{"missing text field", postJSON("/api/recommend-banner", `{}`), http.StatusBadRequest},
+		{"too long text", postJSON("/api/recommend-banner", `{"text": "`+strings.Repeat("a", 1001)+`"}`), http.StatusBadRequest},
+		{"invalid character", postJSON("/api/recommend-banner", `{"text": "Привет"}`), http.StatusBadRequest},
+		{"malformed JSON", postJSON("/api/recommend-banner", `{"text": `), http.StatusBadRequest},
+		{"body too large", postJSON("/api/recommend-banner", `{"text": "`+strings.Repeat("a", 70<<10)+`"}`), http.StatusRequestEntityTooLarge},
+		{"wrong method", httptest.NewRequest(http.MethodGet, "/api/recommend-banner", nil), http.StatusMethodNotAllowed},
+		{"unknown endpoint", postJSON("/api/nope", `{"text": "hi"}`), http.StatusNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			newTestServer(projectRoot, templateDir).ServeHTTP(rec, tt.req)
+
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+			// API errors are JSON with a non-empty "error" message, never HTML.
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || body.Error == "" {
+				t.Errorf("want JSON {\"error\": ...}, decode err = %v, body = %+v", err, body)
+			}
+		})
 	}
 }

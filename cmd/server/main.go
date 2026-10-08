@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"symbol-web/internal/ai"
 	"symbol-web/internal/ascii"
 	"symbol-web/internal/handlers"
 )
@@ -31,8 +32,20 @@ func main() {
 		port = defaultPort
 	}
 
+	// Measure the banners once at startup (the symbol-fs banner profile).
+	// A banner that cannot be read is skipped: the recommendation still
+	// works and judges that banner on style alone.
+	profiles, err := ai.ProfileBanners(".")
+	if err != nil {
+		log.Printf("warning: banner profiling: %v", err)
+	}
+	for _, p := range profiles {
+		log.Printf("banner %-10s average width %.2f (%s)", p.Name, p.AvgWidth, p.Style)
+	}
+
 	h := handlers.New(handlers.Config{
 		Generator:   ascii.NewGenerator("."),
+		Recommender: ai.NewRecommender(profiles),
 		TemplateDir: "templates",
 		StaticDir:   "static",
 	})

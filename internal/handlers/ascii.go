@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"symbol-web/internal/ai"
 	"symbol-web/internal/ascii"
 )
 
@@ -26,6 +27,7 @@ const defaultBanner = "standard"
 // Config holds everything the handlers depend on.
 type Config struct {
 	Generator   *ascii.Generator
+	Recommender *ai.Recommender
 	TemplateDir string
 	StaticDir   string
 }
@@ -61,6 +63,8 @@ func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.home)
 	mux.HandleFunc("/symbol-art", h.symbolArt)
+	mux.HandleFunc("/api/recommend-banner", h.recommendBanner)
+	mux.HandleFunc("/api/", h.apiNotFound)
 
 	static := http.StripPrefix("/static/", http.FileServer(http.Dir(h.cfg.StaticDir)))
 	mux.Handle("/static/", noDirListing(static))
