@@ -6,18 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"symbol-web/internal/ascii"
-)
-
-// Banner names, kept in sync with ascii.Banners.
-const (
-	Shadow     = "shadow"
-	Standard   = "standard"
-	Thinkertoy = "thinkertoy"
 )
 
 // Banner styles, classified from the average character width with the
@@ -74,14 +66,20 @@ func ProfileBanner(name string, font ascii.Font) BannerProfile {
 	return BannerProfile{Name: name, AvgWidth: avg, Style: classifyStyle(avg)}
 }
 
-// ProfileBanners loads and profiles every banner in dir. A banner that
-// cannot be loaded is skipped: the profiles of the others are still
-// returned, together with an error that names every failure.
-func ProfileBanners(dir string) ([]BannerProfile, error) {
+// FontSource provides the parsed font of a banner. *ascii.Generator
+// implements it, with a cache that follows changes to the banner files.
+type FontSource interface {
+	Font(banner string) (ascii.Font, error)
+}
+
+// ProfileBanners profiles every banner. A banner that cannot be loaded is
+// skipped: the profiles of the others are still returned, together with
+// an error that names every failure.
+func ProfileBanners(fonts FontSource) ([]BannerProfile, error) {
 	var profiles []BannerProfile
 	var errs []error
-	for _, name := range ascii.Banners {
-		font, err := ascii.LoadFont(filepath.Join(dir, name+".txt"))
+	for _, name := range ascii.Banners() {
+		font, err := fonts.Font(name)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -118,8 +116,8 @@ type TextProfile struct {
 	Spaces    int
 }
 
-// Profile classifies every character of text.
-func Profile(text string) TextProfile {
+// ProfileText classifies every character of text.
+func ProfileText(text string) TextProfile {
 	trimmed := strings.TrimSpace(text)
 	var p TextProfile
 
@@ -190,16 +188,14 @@ type styleFit struct {
 // Recommender scores banners using the text profile and the measured
 // banner profiles. It never calls an LLM or the network.
 type Recommender struct {
-	profiles map[string]BannerProfile
+	fonts FontSource
 }
 
-// NewRecommender returns a Recommender that uses the given banner profiles.
-func NewRecommender(profiles []BannerProfile) *Recommender {
-	r := &Recommender{profiles: make(map[string]BannerProfile, len(profiles))}
-	for _, p := range profiles {
-		r.profiles[p.Name] = p
-	}
-	return r
+// NewRecommender returns a Recommender that measures the banners it gets
+// from fonts. The fonts are profiled on every call, so the profile always
+// matches the current banner files (measuring 95 widths is very cheap).
+func NewRecommender(fonts FontSource) *Recommender {
+	return &Recommender{fonts: fonts}
 }
 
 // Recommend picks the most suitable banner for text.
@@ -216,24 +212,42 @@ func NewRecommender(profiles []BannerProfile) *Recommender {
 // The banner with the highest score is recommended; the others are
 // returned as alternatives, best first. The result is deterministic.
 func (rc *Recommender) Recommend(text string) Recommendation {
-	p := Profile(text)
+	p := ProfileText(text)
 	sf := classifyText(p)
+	profiles := rc.currentProfiles()
+	return explain(sf, rankBanners(p, sf, profiles), profiles)
+}
 
-	type candidate struct {
-		banner string
-		score  float64
-		fit    float64
-		width  int
+// currentProfiles measures every banner. It returns nil if any banner
+// cannot be loaded: comparing measured widths with unknown ones would be
+// unfair, so then all banners are judged on style alone.
+func (rc *Recommender) currentProfiles() map[string]BannerProfile {
+	measured, err := ProfileBanners(rc.fonts)
+	if err != nil {
+		return nil
 	}
-	// Comparing widths is only fair when every banner was measured;
-	// otherwise all banners are judged on style alone.
-	useWidth := rc.profiledAll()
+	profiles := make(map[string]BannerProfile, len(measured))
+	for _, bp := range measured {
+		profiles[bp.Name] = bp
+	}
+	return profiles
+}
 
+// candidate is one banner with its score, while the banners are ranked.
+type candidate struct {
+	banner string
+	score  float64 // style fit × width fit, rounded to 2 decimals
+	fit    float64 // style fit alone, used to break ties
+	width  int     // estimated art width in columns, 0 if unknown
+}
+
+// rankBanners scores every banner and sorts them, best first.
+func rankBanners(p TextProfile, sf styleFit, profiles map[string]BannerProfile) []candidate {
 	var cands []candidate
-	for _, name := range []string{Shadow, Standard, Thinkertoy} {
+	for _, name := range ascii.Banners() {
 		width := 0
-		if useWidth {
-			width = rc.estimateWidth(name, p)
+		if bp, ok := profiles[name]; ok {
+			width = estimateWidth(p, bp)
 		}
 		cands = append(cands, candidate{
 			banner: name,
@@ -249,8 +263,13 @@ func (rc *Recommender) Recommend(text string) Recommendation {
 		}
 		return cands[i].fit > cands[j].fit
 	})
+	return cands
+}
 
-	best := cands[0]
+// explain turns the ranked banners into the API response, adding the
+// estimated width to every reason where the art would not fit on screen.
+func explain(sf styleFit, ranked []candidate, profiles map[string]BannerProfile) Recommendation {
+	best := ranked[0]
 	rec := Recommendation{Recommended: best.banner, Reasoning: sf.reasoning}
 	if sf.fit[best.banner] < 1 {
 		// The width, not the style, decided: say so.
@@ -261,11 +280,11 @@ func (rc *Recommender) Recommend(text string) Recommendation {
 		rec.Reasoning += fmt.Sprintf(" Note: the art will be about %d columns wide, more than %d.", best.width, screenWidth)
 	}
 
-	for _, c := range cands[1:] {
+	for _, c := range ranked[1:] {
 		reason := sf.reasons[c.banner]
 		if c.width > screenWidth {
-			reason += fmt.Sprintf("; %s (%.2f columns per character) makes it about %d columns wide",
-				rc.profiles[c.banner].Style, rc.profiles[c.banner].AvgWidth, c.width)
+			bp := profiles[c.banner]
+			reason += fmt.Sprintf("; %s (%.2f columns per character) makes it about %d columns wide", bp.Style, bp.AvgWidth, c.width)
 		}
 		rec.Alternatives = append(rec.Alternatives, Alternative{Banner: c.banner, Score: c.score, Reason: reason})
 	}
@@ -284,20 +303,20 @@ func classifyText(p TextProfile) styleFit {
 	case p.SymbolHeavy():
 		return styleFit{
 			reasoning: fmt.Sprintf("Symbol-heavy text (%d of %d characters are symbols) fits the playful thinkertoy style.", p.Special, p.Length),
-			fit:       map[string]float64{Thinkertoy: 1, Standard: 0.6, Shadow: 0.4},
-			reasons:   map[string]string{Thinkertoy: "Playful style that suits symbols", Standard: "Readable, but less playful", Shadow: "Heavy letters overpower the symbols"},
+			fit:       map[string]float64{ascii.Thinkertoy: 1, ascii.Standard: 0.6, ascii.Shadow: 0.4},
+			reasons:   map[string]string{ascii.Thinkertoy: "Playful style that suits symbols", ascii.Standard: "Readable, but less playful", ascii.Shadow: "Heavy letters overpower the symbols"},
 		}
 	case p.AllUppercase():
 		return styleFit{
 			reasoning: "Bold, uppercase text works best with shadow for maximum impact and readability.",
-			fit:       map[string]float64{Shadow: 1, Standard: 0.7, Thinkertoy: 0.4},
-			reasons:   map[string]string{Shadow: "Bold letters give uppercase text impact", Standard: "Good alternative, slightly less impactful", Thinkertoy: "Too decorative for uppercase text"},
+			fit:       map[string]float64{ascii.Shadow: 1, ascii.Standard: 0.7, ascii.Thinkertoy: 0.4},
+			reasons:   map[string]string{ascii.Shadow: "Bold letters give uppercase text impact", ascii.Standard: "Good alternative, slightly less impactful", ascii.Thinkertoy: "Too decorative for uppercase text"},
 		}
 	case p.Length <= shortTextMax:
 		return styleFit{
 			reasoning: fmt.Sprintf("Short text (%d characters) stands out best in bold shadow letters.", p.Length),
-			fit:       map[string]float64{Shadow: 1, Standard: 0.7, Thinkertoy: 0.5},
-			reasons:   map[string]string{Shadow: "Bold letters make short text stand out", Standard: "Clean, but less eye-catching", Thinkertoy: "Playful, but thin for such short text"},
+			fit:       map[string]float64{ascii.Shadow: 1, ascii.Standard: 0.7, ascii.Thinkertoy: 0.5},
+			reasons:   map[string]string{ascii.Shadow: "Bold letters make short text stand out", ascii.Standard: "Clean, but less eye-catching", ascii.Thinkertoy: "Playful, but thin for such short text"},
 		}
 	case p.Length >= longTextMin || p.Lines > 1:
 		reasoning := fmt.Sprintf("Longer text (%d characters) stays readable in the clean standard font.", p.Length)
@@ -306,32 +325,22 @@ func classifyText(p TextProfile) styleFit {
 		}
 		return styleFit{
 			reasoning: reasoning,
-			fit:       map[string]float64{Standard: 1, Thinkertoy: 0.6, Shadow: 0.4},
-			reasons:   map[string]string{Standard: "Clean font that keeps long text readable", Thinkertoy: "Narrow, but harder to read in long text", Shadow: "Very wide letters make long text hard to read"},
+			fit:       map[string]float64{ascii.Standard: 1, ascii.Thinkertoy: 0.6, ascii.Shadow: 0.4},
+			reasons:   map[string]string{ascii.Standard: "Clean font that keeps long text readable", ascii.Thinkertoy: "Narrow, but harder to read in long text", ascii.Shadow: "Very wide letters make long text hard to read"},
 		}
 	default:
 		return styleFit{
 			reasoning: fmt.Sprintf("Short mixed-case text (%d characters) looks playful in thinkertoy.", p.Length),
-			fit:       map[string]float64{Thinkertoy: 1, Standard: 0.7, Shadow: 0.5},
-			reasons:   map[string]string{Thinkertoy: "Playful style for short mixed text", Standard: "Clean and readable alternative", Shadow: "Bolder, but less playful"},
+			fit:       map[string]float64{ascii.Thinkertoy: 1, ascii.Standard: 0.7, ascii.Shadow: 0.5},
+			reasons:   map[string]string{ascii.Thinkertoy: "Playful style for short mixed text", ascii.Standard: "Clean and readable alternative", ascii.Shadow: "Bolder, but less playful"},
 		}
 	}
-}
-
-// profiledAll reports whether every banner has a measured profile.
-func (rc *Recommender) profiledAll() bool {
-	for _, name := range []string{Shadow, Standard, Thinkertoy} {
-		if _, ok := rc.profiles[name]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // estimateWidth predicts the art width in columns: the longest line of
 // text times the banner's average character width.
-func (rc *Recommender) estimateWidth(banner string, p TextProfile) int {
-	return int(math.Round(float64(p.Longest) * rc.profiles[banner].AvgWidth))
+func estimateWidth(p TextProfile, banner BannerProfile) int {
+	return int(math.Round(float64(p.Longest) * banner.AvgWidth))
 }
 
 // widthFit is 1 when the art fits on screen and shrinks as it gets wider.

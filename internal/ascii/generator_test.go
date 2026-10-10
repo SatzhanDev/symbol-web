@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // bannerDir is where the real banner files live, relative to this package.
@@ -67,7 +68,7 @@ func TestRenderUnsupportedCharacter(t *testing.T) {
 }
 
 func TestLoadFontAllBanners(t *testing.T) {
-	for _, name := range Banners {
+	for _, name := range Banners() {
 		t.Run(name, func(t *testing.T) {
 			font, err := LoadFont(filepath.Join(bannerDir, name+".txt"))
 			if err != nil {
@@ -114,7 +115,7 @@ func TestGenerateStandard(t *testing.T) {
 
 func TestGenerateAllBannersSameWidthRows(t *testing.T) {
 	g := NewGenerator(bannerDir)
-	for _, name := range Banners {
+	for _, name := range Banners() {
 		t.Run(name, func(t *testing.T) {
 			art, err := g.Generate("Hello", name)
 			if err != nil {
@@ -179,5 +180,77 @@ func TestGenerateErrors(t *testing.T) {
 func TestGenerateMaxLengthAllowed(t *testing.T) {
 	if _, err := NewGenerator(bannerDir).Generate(strings.Repeat("a", MaxTextLength), "standard"); err != nil {
 		t.Fatalf("text of exactly %d characters should be accepted: %v", MaxTextLength, err)
+	}
+}
+
+func TestBannersReturnsACopy(t *testing.T) {
+	list := Banners()
+	list[0] = "hacked"
+	if Banners()[0] != Standard {
+		t.Error("changing the returned slice must not change the banner list")
+	}
+}
+
+// copyBanner copies a real banner file into dir and returns its path.
+func copyBanner(t *testing.T, dir, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(bannerDir, name+".txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, name+".txt")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The font cache notices when a banner file is replaced or deleted.
+func TestFontCacheFollowsFileChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := copyBanner(t, dir, Standard)
+	g := NewGenerator(dir)
+
+	before, err := g.Generate("A", Standard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace standard.txt with the shadow font; a new modification time
+	// guarantees the change is visible even on coarse file systems.
+	copyBanner(t, dir, Shadow)
+	if err := os.Rename(filepath.Join(dir, Shadow+".txt"), path); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	after, err := g.Generate("A", Standard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after == before {
+		t.Error("a changed banner file should be read again")
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Generate("A", Standard); !errors.Is(err, ErrBannerNotFound) {
+		t.Errorf("deleted banner: got %v, want ErrBannerNotFound", err)
+	}
+}
+
+func TestFontIsCached(t *testing.T) {
+	g := NewGenerator(bannerDir)
+	first, err := g.Font(Standard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := g.Font(Standard)
+	// The same map is returned when the file did not change.
+	if reflect.ValueOf(first).UnsafePointer() != reflect.ValueOf(second).UnsafePointer() {
+		t.Error("an unchanged banner file should come from the cache")
 	}
 }

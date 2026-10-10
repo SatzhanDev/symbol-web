@@ -5,11 +5,15 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,25 +31,29 @@ const (
 )
 
 func main() {
+	if err := loadDotEnv(".env"); err != nil {
+		log.Fatalf(".env: %v", err)
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = defaultPort
 	}
 
-	// Measure the banners once at startup (the symbol-fs banner profile).
-	// A banner that cannot be read is skipped: the recommendation still
-	// works and judges that banner on style alone.
-	profiles, err := ai.ProfileBanners(".")
+	// One generator for the whole server: its font cache is shared by the
+	// ASCII art endpoint and the banner recommender.
+	generator := ascii.NewGenerator(".")
+	logBannerProfiles(generator)
+
+	assistant, err := newAssistant(ai.ConfigFromEnv())
 	if err != nil {
-		log.Printf("warning: banner profiling: %v", err)
-	}
-	for _, p := range profiles {
-		log.Printf("banner %-10s average width %.2f (%s)", p.Name, p.AvgWidth, p.Style)
+		log.Fatalf("LLM config: %v", err)
 	}
 
 	h := handlers.New(handlers.Config{
-		Generator:   ascii.NewGenerator("."),
-		Recommender: ai.NewRecommender(profiles),
+		Generator:   generator,
+		Recommender: ai.NewRecommender(generator),
+		Assistant:   assistant,
 		TemplateDir: "templates",
 		StaticDir:   "static",
 	})
@@ -95,4 +103,62 @@ func main() {
 		return
 	}
 	log.Println("Server stopped")
+}
+
+// logBannerProfiles prints the measured banner profiles (symbol-fs) at
+// startup. A missing banner is only a warning: the other endpoints still
+// work, and /symbol-art answers 404 for that banner.
+func logBannerProfiles(fonts ai.FontSource) {
+	profiles, err := ai.ProfileBanners(fonts)
+	if err != nil {
+		log.Printf("warning: banner profiling: %v", err)
+	}
+	for _, p := range profiles {
+		log.Printf("banner %-10s average width %.2f (%s)", p.Name, p.AvgWidth, p.Style)
+	}
+}
+
+// newAssistant picks the LLM implementation: without LLM_BASE_URL the
+// server runs in mock mode with canned answers and no network.
+func newAssistant(cfg ai.Config) (handlers.Assistant, error) {
+	if cfg.MockMode() {
+		log.Printf("LLM mode: mock (LLM_BASE_URL is not set, canned answers)")
+		return ai.NewMock(), nil
+	}
+	client, err := ai.NewClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("LLM mode: live (model %q)", client.Model())
+	return client, nil
+}
+
+// loadDotEnv reads KEY=VALUE lines from path into the environment, so the
+// settings from .env work without exporting them by hand. Variables that
+// are already set win over the file, and a missing file is not an error.
+func loadDotEnv(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(strings.TrimPrefix(line, "export "), "=")
+		if !ok {
+			return fmt.Errorf("line %d: expected KEY=VALUE", i+1)
+		}
+		key = strings.TrimSpace(key)
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		if _, exists := os.LookupEnv(key); !exists {
+			os.Setenv(key, value)
+		}
+	}
+	return nil
 }

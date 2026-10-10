@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"symbol-web/internal/ai"
 	"symbol-web/internal/ascii"
@@ -28,16 +31,36 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// newTestServer builds the full router with the given directories.
+// newTestServer builds the full router with the given directories and
+// the LLM assistant in mock mode.
 func newTestServer(bannerDir, tmplDir string) http.Handler {
-	profiles, _ := ai.ProfileBanners(bannerDir) // missing banners are simply skipped
+	return newServerWithAssistant(bannerDir, tmplDir, ai.NewMock())
+}
+
+func newServerWithAssistant(bannerDir, tmplDir string, assistant Assistant) http.Handler {
+	generator := ascii.NewGenerator(bannerDir)
 	return New(Config{
-		Generator:   ascii.NewGenerator(bannerDir),
-		Recommender: ai.NewRecommender(profiles),
+		Generator:   generator,
+		Recommender: ai.NewRecommender(generator),
+		Assistant:   assistant,
 		TemplateDir: tmplDir,
 		StaticDir:   staticDir,
 	}).Routes()
 }
+
+// fakeAssistant is an Assistant that always fails with err, to test how
+// the handlers react to LLM problems without any network.
+type fakeAssistant struct{ err error }
+
+func (f fakeAssistant) GetSuggestions(context.Context, string) ([]string, error) {
+	return nil, f.err
+}
+
+func (f fakeAssistant) GetVariations(context.Context, string) ([]ai.Variation, error) {
+	return nil, f.err
+}
+
+func (f fakeAssistant) Mode() string { return "fake" }
 
 func do(t *testing.T, h http.Handler, req *http.Request) (int, string) {
 	t.Helper()
@@ -137,6 +160,66 @@ func TestPanicBecomes500(t *testing.T) {
 	}
 }
 
+// A panic after the response has started cannot turn it into a 500: the
+// partial response is kept and no second error page is appended.
+func TestPanicAfterWriteKeepsResponse(t *testing.T) {
+	h := New(Config{TemplateDir: templateDir})
+	panicky := h.recoverPanics(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "partial")
+		panic("boom")
+	}))
+	code, body := do(t, panicky, httptest.NewRequest(http.MethodGet, "/", nil))
+	if code != http.StatusOK || body != "partial" {
+		t.Errorf("got %d %q, want 200 \"partial\"", code, body)
+	}
+}
+
+// http.ErrAbortHandler is net/http's way to abort a response on purpose;
+// it must reach the server instead of becoming a 500 page.
+func TestAbortHandlerPanicIsNotRecovered(t *testing.T) {
+	h := New(Config{TemplateDir: templateDir})
+	aborting := h.recoverPanics(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+	defer func() {
+		if v := recover(); v != http.ErrAbortHandler {
+			t.Errorf("recovered %v, want http.ErrAbortHandler to be re-panicked", v)
+		}
+	}()
+	aborting.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+}
+
+// Templates are cached, but an edited or deleted template is noticed on
+// the next request without restarting the server.
+func TestTemplateCacheFollowsFileChanges(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"index.html", "result.html", "error.html"} {
+		data, err := os.ReadFile(filepath.Join(templateDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, dir, name, string(data))
+	}
+	srv := newTestServer(projectRoot, dir)
+	get := func() (int, string) { return do(t, srv, httptest.NewRequest(http.MethodGet, "/", nil)) }
+
+	if code, _ := get(); code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+
+	writeFile(t, dir, "index.html", `<p>edited</p>{{template "result" .}}`)
+	later := time.Now().Add(time.Hour) // a clearly newer modification time
+	os.Chtimes(filepath.Join(dir, "index.html"), later, later)
+	if code, body := get(); code != http.StatusOK || !strings.Contains(body, "edited") {
+		t.Errorf("edited template not picked up: %d %q", code, body)
+	}
+
+	os.Remove(filepath.Join(dir, "index.html"))
+	if code, _ := get(); code != http.StatusNotFound {
+		t.Errorf("deleted template: status = %d, want 404", code)
+	}
+}
+
 func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
@@ -166,7 +249,7 @@ func TestRecommendBannerEndpoint(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("response is not valid JSON: %v", err)
 	}
-	if got.Recommended != ai.Shadow || got.Reasoning == "" || len(got.Alternatives) != 2 {
+	if got.Recommended != ascii.Shadow || got.Reasoning == "" || len(got.Alternatives) != 2 {
 		t.Errorf("unexpected recommendation: %+v", got)
 	}
 }
@@ -182,7 +265,7 @@ func TestAPIErrors(t *testing.T) {
 		{"too long text", postJSON("/api/recommend-banner", `{"text": "`+strings.Repeat("a", 1001)+`"}`), http.StatusBadRequest},
 		{"invalid character", postJSON("/api/recommend-banner", `{"text": "Привет"}`), http.StatusBadRequest},
 		{"malformed JSON", postJSON("/api/recommend-banner", `{"text": `), http.StatusBadRequest},
-		{"body too large", postJSON("/api/recommend-banner", `{"text": "`+strings.Repeat("a", 70<<10)+`"}`), http.StatusRequestEntityTooLarge},
+		{"body too large", postJSON("/api/recommend-banner", `{"text": "`+strings.Repeat("a", 70<<10)+`"}`), http.StatusBadRequest},
 		{"wrong method", httptest.NewRequest(http.MethodGet, "/api/recommend-banner", nil), http.StatusMethodNotAllowed},
 		{"unknown endpoint", postJSON("/api/nope", `{"text": "hi"}`), http.StatusNotFound},
 	}
@@ -201,6 +284,91 @@ func TestAPIErrors(t *testing.T) {
 			}
 			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || body.Error == "" {
 				t.Errorf("want JSON {\"error\": ...}, decode err = %v, body = %+v", err, body)
+			}
+		})
+	}
+}
+
+func TestSuggestMockMode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newTestServer(projectRoot, templateDir).ServeHTTP(rec, postJSON("/api/suggest", `{"text": "Happy Birth"}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if mode := rec.Header().Get("X-LLM-Mode"); mode != "mock" {
+		t.Errorf("X-LLM-Mode = %q, want mock", mode)
+	}
+	var body struct {
+		Suggestions []string `json:"suggestions"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(body.Suggestions); n < 3 || n > 5 {
+		t.Errorf("got %d suggestions, want 3-5: %q", n, body.Suggestions)
+	}
+}
+
+func TestVariationsMockMode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newTestServer(projectRoot, templateDir).ServeHTTP(rec, postJSON("/api/variations", `{"text": "hello"}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Variations []ai.Variation `json:"variations"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(body.Variations); n < 3 || n > 5 {
+		t.Fatalf("got %d variations, want 3-5", n)
+	}
+	for _, v := range body.Variations {
+		if v.Text == "" || v.Description == "" || !ascii.IsValidBanner(v.SuggestedBanner) {
+			t.Errorf("incomplete variation %+v", v)
+		}
+	}
+}
+
+// Failures of a live LLM become JSON errors with the right status code,
+// and never crash the server.
+func TestAIEndpointErrors(t *testing.T) {
+	down := fakeAssistant{fmt.Errorf("%w: connection refused", ai.ErrUnavailable)}
+	garbage := fakeAssistant{fmt.Errorf("%w: not JSON", ai.ErrInvalidResponse)}
+	mock := ai.NewMock()
+
+	tests := []struct {
+		name      string
+		assistant Assistant
+		req       *http.Request
+		want      int
+	}{
+		{"suggest: LLM down", down, postJSON("/api/suggest", `{"text": "Hello"}`), http.StatusServiceUnavailable},
+		{"variations: LLM down", down, postJSON("/api/variations", `{"text": "Hello"}`), http.StatusServiceUnavailable},
+		{"suggest: invalid LLM answer", garbage, postJSON("/api/suggest", `{"text": "Hello"}`), http.StatusInternalServerError},
+		{"variations: invalid LLM answer", garbage, postJSON("/api/variations", `{"text": "Hello"}`), http.StatusInternalServerError},
+		{"suggest: text too short", mock, postJSON("/api/suggest", `{"text": "Hi"}`), http.StatusBadRequest},
+		{"suggest: empty text", mock, postJSON("/api/suggest", `{"text": "   "}`), http.StatusBadRequest},
+		{"suggest: invalid character", mock, postJSON("/api/suggest", `{"text": "Привет"}`), http.StatusBadRequest},
+		{"variations: wrong method", mock, httptest.NewRequest(http.MethodGet, "/api/variations", nil), http.StatusMethodNotAllowed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			newServerWithAssistant(projectRoot, templateDir, tt.assistant).ServeHTTP(rec, tt.req)
+
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || body.Error == "" {
+				t.Errorf("want a JSON error message, got err=%v body=%+v", err, body)
 			}
 		})
 	}

@@ -9,7 +9,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Height is the fixed number of lines used to draw a single character.
@@ -25,8 +28,23 @@ const (
 // MaxTextLength is the maximum number of characters accepted as input.
 const MaxTextLength = 1000
 
-// Banners lists every banner name the generator supports.
-var Banners = []string{"standard", "shadow", "thinkertoy"}
+// Banner names. Every other package uses these constants, so the list of
+// banners is defined in exactly one place.
+const (
+	Standard      = "standard"
+	Shadow        = "shadow"
+	Thinkertoy    = "thinkertoy"
+	DefaultBanner = Standard
+)
+
+// banners is unexported so no other package can change it; use Banners.
+var banners = []string{Standard, Shadow, Thinkertoy}
+
+// Banners returns the names of all supported banners, in display order.
+// It returns a copy, so callers cannot modify the list.
+func Banners() []string {
+	return slices.Clone(banners)
+}
 
 // Sentinel errors let callers (the HTTP handlers) pick the right status
 // code with errors.Is instead of comparing error strings.
@@ -39,30 +57,42 @@ var (
 )
 
 // Font maps a printable ASCII rune to its Height-line ASCII-art glyph.
+// A Font is never modified after loading, so it is safe to share
+// between goroutines.
 type Font map[rune][Height]string
 
 // Generator renders text with banner files stored in a directory.
+//
+// Parsed fonts are cached. On every use the file is checked with a cheap
+// os.Stat: a changed file is parsed again and a deleted file is reported
+// as ErrBannerNotFound, so edits are picked up without a restart.
 type Generator struct {
 	dir string
+
+	mu    sync.Mutex
+	fonts map[string]cachedFont
+}
+
+type cachedFont struct {
+	font    Font
+	modTime time.Time
+	size    int64
 }
 
 // NewGenerator returns a Generator that reads banner files from dir.
 func NewGenerator(dir string) *Generator {
-	return &Generator{dir: dir}
+	return &Generator{dir: dir, fonts: make(map[string]cachedFont)}
 }
 
-// Generate validates text and banner, loads the banner file and returns
-// the rendered ASCII art as a single string with "\n" line separators.
+// Generate validates text and banner and returns the rendered ASCII art
+// as a single string with "\n" line separators.
 func (g *Generator) Generate(text, banner string) (string, error) {
 	text = NormalizeNewlines(text)
 	if err := ValidateText(text); err != nil {
 		return "", err
 	}
-	if !IsValidBanner(banner) {
-		return "", fmt.Errorf("%w: %q", ErrInvalidBanner, banner)
-	}
 
-	font, err := LoadFont(filepath.Join(g.dir, banner+".txt"))
+	font, err := g.Font(banner)
 	if err != nil {
 		return "", err
 	}
@@ -72,6 +102,41 @@ func (g *Generator) Generate(text, banner string) (string, error) {
 		return "", err
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+// Font returns the parsed font of banner, reading the file again only if
+// it changed since the last call.
+func (g *Generator) Font(banner string) (Font, error) {
+	if !IsValidBanner(banner) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidBanner, banner)
+	}
+	path := filepath.Join(g.dir, banner+".txt")
+
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %s", ErrBannerNotFound, path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ascii: stat %s: %w", path, err)
+	}
+
+	g.mu.Lock()
+	cached, ok := g.fonts[banner]
+	g.mu.Unlock()
+	if ok && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
+		return cached.font, nil
+	}
+
+	// Parse outside the lock: other requests are not blocked meanwhile.
+	font, err := LoadFont(path)
+	if err != nil {
+		return nil, err
+	}
+
+	g.mu.Lock()
+	g.fonts[banner] = cachedFont{font: font, modTime: info.ModTime(), size: info.Size()}
+	g.mu.Unlock()
+	return font, nil
 }
 
 // NormalizeNewlines converts Windows-style "\r\n" (which browsers send
@@ -97,14 +162,9 @@ func ValidateText(text string) error {
 	return nil
 }
 
-// IsValidBanner reports whether name is one of the supported Banners.
+// IsValidBanner reports whether name is one of the supported banners.
 func IsValidBanner(name string) bool {
-	for _, b := range Banners {
-		if b == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(banners, name)
 }
 
 // LoadFont reads a banner file and builds a Font from it.
