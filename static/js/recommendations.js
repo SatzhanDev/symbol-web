@@ -3,7 +3,6 @@
 // The server picks a banner with fixed rules (no LLM). The page shows the
 // reason and the alternatives, highlights the recommended banner and
 // offers a button to select it.
-
 import { postJSON } from "./shared.js";
 
 const input = document.getElementById("text-input");
