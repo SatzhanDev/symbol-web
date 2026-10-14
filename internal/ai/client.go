@@ -62,6 +62,7 @@ type Client struct {
 	endpoint string // full URL of /v1/chat/completions
 	model    string
 	apiKey   string
+	timeout  time.Duration // total time for one suggestion or variation request
 	http     *http.Client
 	cache    *cache
 }
@@ -88,6 +89,7 @@ func NewClient(cfg Config) (*Client, error) {
 		endpoint: base + "/v1/chat/completions",
 		model:    cfg.Model,
 		apiKey:   cfg.APIKey,
+		timeout:  cfg.Timeout,
 		http:     &http.Client{Timeout: cfg.Timeout},
 		cache:    newCache(cfg.CacheTTL),
 	}, nil

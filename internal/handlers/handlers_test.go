@@ -82,7 +82,14 @@ func TestHomePage(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
 	}
-	for _, want := range []string{`action="/symbol-art"`, `id="text-input"`, `value="shadow"`, `value="standard"`, `value="thinkertoy"`} {
+	for _, want := range []string{
+		`action="/symbol-art"`, `id="text-input"`,
+		`value="shadow"`, `value="standard"`, `value="thinkertoy"`,
+		// AI features (stage 5)
+		`id="suggestions-dropdown"`, `id="ai-recommend-btn"`, `id="recommendation-result"`,
+		`id="get-variations-btn"`, `id="variations-modal"`,
+		`src="/static/js/suggestions.js"`, `src="/static/js/recommendations.js"`, `src="/static/js/variations.js"`,
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("home page is missing %q", want)
 		}
@@ -371,5 +378,20 @@ func TestAIEndpointErrors(t *testing.T) {
 				t.Errorf("want a JSON error message, got err=%v body=%+v", err, body)
 			}
 		})
+	}
+}
+
+// Browsers only run a <script type="module"> served with a JavaScript
+// content type.
+func TestJavaScriptIsServedAsJavaScript(t *testing.T) {
+	for _, name := range []string{"shared.js", "suggestions.js", "recommendations.js", "variations.js"} {
+		rec := httptest.NewRecorder()
+		newTestServer(projectRoot, templateDir).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/js/"+name, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", name, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+			t.Errorf("%s: Content-Type = %q, want text/javascript", name, ct)
+		}
 	}
 }

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>symbol-web</title>
   <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%A4%3C/text%3E%3C/svg%3E">
 </head>
 <body>
   <main class="container">
@@ -13,11 +14,23 @@
       <p class="subtitle">Turn your text into ASCII art</p>
     </header>
 
+    <!-- The form works without JavaScript; the AI features add to it. -->
     <form class="card" action="/symbol-art" method="POST">
       <label class="label" for="text-input">Your text</label>
-      <textarea id="text-input" name="text" rows="3" maxlength="1000"
-                placeholder="Type your text..." required>{{.Text}}</textarea>
-      <p class="hint">English letters, digits and symbols. Press Enter for a new line.</p>
+      <div class="input-wrap">
+        <textarea id="text-input" name="text" rows="3" maxlength="1000"
+                  placeholder="Type your text..." required
+                  aria-autocomplete="list" aria-controls="suggestions-dropdown"
+                  aria-expanded="false">{{.Text}}</textarea>
+        <div id="suggestions-dropdown" class="suggestions hidden" role="listbox"
+             aria-label="Suggestions"></div>
+      </div>
+      <p class="hint">English letters, digits and symbols. Press Enter for a new line.
+        AI suggestions appear after 3 characters.</p>
+
+      <div class="tools">
+        <button type="button" id="get-variations-btn" class="btn-secondary">💡 Get Creative Ideas</button>
+      </div>
 
       <fieldset class="banners">
         <legend class="label">Banner</legend>
@@ -27,7 +40,9 @@
           <span>{{.}}</span>
         </label>
         {{end}}
+        <button type="button" id="ai-recommend-btn" class="btn-ai">🤖 AI Recommend Banner</button>
       </fieldset>
+      <div id="recommendation-result" class="recommendation hidden" aria-live="polite"></div>
 
       {{if .Error}}
       <p class="error-message" role="alert">{{.Error}}</p>
@@ -38,5 +53,19 @@
 
     {{template "result" .}}
   </main>
+
+  <dialog id="variations-modal" class="modal" aria-labelledby="variations-title">
+    <div class="modal-header">
+      <h2 id="variations-title">💡 Creative ideas</h2>
+      <button type="button" class="modal-close" aria-label="Close">×</button>
+    </div>
+    <p class="modal-status" role="status"></p>
+    <div class="variations-list"></div>
+  </dialog>
+
+  <!-- Modules run after the page is parsed and do not pollute the global scope. -->
+  <script type="module" src="/static/js/suggestions.js"></script>
+  <script type="module" src="/static/js/recommendations.js"></script>
+  <script type="module" src="/static/js/variations.js"></script>
 </body>
 </html>

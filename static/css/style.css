@@ -169,3 +169,238 @@ textarea:focus {
   margin: 0 0 24px;
   color: var(--muted);
 }
+
+/* ------------------------------------------------------------------ */
+/* AI features (stage 5)                                               */
+/* ------------------------------------------------------------------ */
+
+.hidden {
+  display: none !important;
+}
+
+/* Suggestions dropdown, positioned right below the text input */
+.input-wrap {
+  position: relative;
+}
+
+.suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(16, 20, 28, 0.12);
+}
+
+.suggestion-item {
+  padding: 8px 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+
+.suggestion-item:hover,
+.suggestion-item.active {
+  background: #eef2ff;
+  color: var(--accent);
+}
+
+.suggestions-status,
+.suggestions-note {
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.suggestions-note {
+  border-top: 1px solid var(--border);
+}
+
+.suggestions-status.error {
+  color: var(--error-text);
+}
+
+/* Secondary buttons */
+.tools {
+  margin: -8px 0 20px;
+}
+
+.btn-secondary,
+.btn-ai {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.btn-secondary:hover,
+.btn-ai:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-ai {
+  margin-bottom: 8px;
+  background: #f5f3ff;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.btn-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Recommendation */
+.banner-option.recommended {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.2);
+}
+
+.banner-option.recommended span::after {
+  content: " ★";
+  color: #7c3aed;
+}
+
+.recommendation {
+  margin: -8px 0 20px;
+  padding: 12px 14px;
+  border-left: 3px solid #7c3aed;
+  border-radius: 8px;
+  background: #f5f3ff;
+  font-size: 0.92rem;
+}
+
+.recommendation.error {
+  border-left-color: var(--error-text);
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+.rec-title,
+.rec-reason {
+  margin: 0 0 6px;
+}
+
+.rec-alternatives {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+}
+
+.rec-alternatives li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+/* A small bar whose filled part is the score (0..1). */
+.score-bar {
+  flex: none;
+  width: 48px;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(to right, #7c3aed calc(var(--score) * 100%), var(--border) 0);
+}
+
+/* Variations dialog */
+.modal {
+  width: min(560px, calc(100% - 32px));
+  padding: 20px 24px 24px;
+  border: 0;
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(16, 20, 28, 0.3);
+}
+
+.modal::backdrop {
+  background: rgba(16, 20, 28, 0.45);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.modal-close {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal-status {
+  margin: 8px 0 16px;
+  color: var(--muted);
+}
+
+.modal-status.error {
+  color: var(--error-text);
+}
+
+.variations-list {
+  display: grid;
+  gap: 10px;
+}
+
+.variation-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.variation-card:hover,
+.variation-card:focus-visible {
+  border-color: var(--accent);
+  background: #f8f9ff;
+}
+
+.variation-text {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.variation-description {
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.variation-card .badge {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
